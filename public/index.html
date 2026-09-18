@@ -57,6 +57,16 @@
 
           <!-- 右：矛盾提示 + 主张 -->
           <section class="pane claims-pane">
+            <div class="revision-banner" id="revisionBanner" hidden>
+              <div class="revision-head">
+                <strong>📝 原文修订后有证据待确认</strong>
+                <label class="show-ignored">
+                  <input type="checkbox" id="chkQueueExpanded"> 展开待确认队列
+                </label>
+              </div>
+              <div class="revision-summary" id="revisionSummary"></div>
+              <div id="revisionQueue" hidden></div>
+            </div>
             <div class="conflict-banner" id="conflictBanner" hidden>
               <div class="conflict-head">
                 <strong>⚠️ 检测到矛盾说法</strong>
@@ -129,7 +139,7 @@
       <input type="text" id="editSource">
       <label>带时间戳的采访原文</label>
       <textarea id="editTranscript" rows="14" placeholder="例如：&#10;[00:00:12] 记者：请问公司哪一年成立？&#10;[00:00:20] 受访者：我们2018年在杭州成立……"></textarea>
-      <p class="hint">支持时间戳格式：[00:01:23]、(12:34)、01:23：、【2分15秒】；保存后重新分段并重算矛盾。</p>
+      <p class="hint">支持时间戳格式：[00:01:23]、(12:34)、01:23：、【2分15秒】；保存后重新分段并重算矛盾。已有证据摘录会按文本、时间戳、说话人与新分段重新匹配：唯一匹配自动更新定位；无匹配或多匹配将进入「待确认」队列，由你重新绑定或保留为历史快照，不会丢失。</p>
       <div class="modal-actions">
         <button class="btn danger" id="btnDeleteInterview">删除采访</button>
         <span class="spacer"></span>

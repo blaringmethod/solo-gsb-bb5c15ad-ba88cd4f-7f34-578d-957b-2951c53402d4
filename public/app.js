@@ -86,6 +86,9 @@ async function loadList(selectId) {
   for (const iv of state.interviews) {
     const meta = el('div', { class: 'm' }, [
       el('span', { text: `主张 ${iv.claim_count}` }),
+      iv.pending_evidence_count > 0
+        ? el('span', { class: 'badge-pending-sm', text: `📝 ${iv.pending_evidence_count} 待确认` })
+        : null,
       iv.contradiction_count > 0
         ? el('span', { class: 'badge-conflict', text: `⚠ ${iv.contradiction_count}` })
         : null
@@ -112,6 +115,7 @@ function renderAll() {
   $('#ivTitle').textContent = iv.title;
   $('#ivSource').textContent = iv.source ? `来源/被访人：${iv.source}` : '';
   renderSegments();
+  renderRevisionQueue();
   renderConflicts();
   renderClaims();
 }
@@ -330,19 +334,73 @@ function renderClaims() {
     }
 
     // 证据链
-    card.appendChild(el('div', { class: 'claim-section-label', text: `证据链（${c.evidence.length}）` }));
+    const pendingEv = c.evidence.filter((e) => e.match_status === 'pending');
+    const labelText = `证据链（${c.evidence.length}）`;
+    const sectionLabel = el('div', { class: 'claim-section-label' }, [document.createTextNode(labelText)]);
+    if (pendingEv.length) {
+      sectionLabel.appendChild(el('span', {
+        class: 'badge-pending',
+        text: `${pendingEv.length} 条待确认`,
+        title: '展开顶部待确认队列处理',
+        onclick: () => {
+          $('#chkQueueExpanded').checked = true;
+          renderRevisionQueue();
+          $('#revisionBanner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }));
+    }
+    card.appendChild(sectionLabel);
     c.evidence.forEach((ev) => {
-      const item = el('div', { class: 'ev-item' }, [
-        el('span', {
-          class: 'ev-cite',
-          text: `[${ev.time_label || '—'}]`,
-          title: '跳转到原文位置',
-          onclick: () => jumpToSegment(ev.time_label)
-        }),
-        ev.speaker ? el('span', { class: 'ev-speaker', text: ev.speaker + '：' }) : null,
-        document.createTextNode(ev.excerpt),
-        el('span', { class: 'ev-del', text: '✕', title: '删除证据', onclick: () => removeEvidence(ev.id) })
-      ]);
+      const status = ev.match_status === 'snapshot' ? 'snapshot'
+        : ev.match_status === 'pending' ? 'pending' : 'current';
+      const item = el('div', { class: 'ev-item' + (status === 'pending' ? ' pending' : status === 'snapshot' ? ' snapshot' : '') });
+
+      if (status === 'pending') {
+        item.appendChild(el('span', {
+          class: 'ev-flag pending',
+          text: '待确认',
+          title: PENDING_REASON_LABELS[ev.pending_reason] || '原文修订后定位待确认'
+        }));
+      } else if (status === 'snapshot') {
+        item.appendChild(el('span', {
+          class: 'ev-flag snapshot',
+          text: '历史快照',
+          title: '修订前保留内容，不指向当前原文'
+        }));
+      }
+
+      item.appendChild(el('span', {
+        class: 'ev-cite',
+        text: `[${evidenceCiteLabel(ev)}]`,
+        title: status === 'current' ? '跳转到原文位置' : '修订前的定位，当前原文可能已不存在',
+        onclick: () => {
+          if (status === 'current') jumpToSegmentByOrd(ev.time_label, ev.seg_ord);
+        }
+      }));
+      ev.speaker ? item.appendChild(el('span', { class: 'ev-speaker', text: ev.speaker + '：' })) : null;
+      item.appendChild(document.createTextNode(ev.excerpt));
+      item.appendChild(el('span', { class: 'ev-del', text: '✕', title: '删除证据', onclick: () => removeEvidence(ev.id) }));
+
+      if (status === 'pending') {
+        const actions = el('span', { class: 'ev-inline-actions' }, [
+          el('button', {
+            class: 'link-btn',
+            text: '重绑…',
+            onclick: () => {
+              $('#chkQueueExpanded').checked = true;
+              renderRevisionQueue();
+              const q = $('#revisionQueue');
+              q.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }),
+          el('button', {
+            class: 'link-btn',
+            text: '保留快照',
+            onclick: () => resolveEvidence(ev.id, 'snapshot', null, c)
+          })
+        ]);
+        item.appendChild(el('div', { style: 'clear:both;text-align:right;margin-top:3px;' }, [actions]));
+      }
       card.appendChild(item);
     });
 
@@ -364,16 +422,19 @@ function renderClaims() {
   });
 }
 
-function jumpToSegment(timeLabel) {
-  if (!timeLabel) return;
-  let t = [...$$('.seg-time')].find((n) => n.dataset.timeLabel === timeLabel);
-  // 无真实时间戳时的兜底标签：「片段 N」对应第 N 段（从 1 开始）
-  if (!t) {
-    const m = timeLabel.match(/^片段\s*(\d+)$/);
-    if (m) t = $(`.seg-time[data-seg-ord="${parseInt(m[1], 10) - 1}"]`);
+// 优先按分段序号跳转（修订后定位），其次按时间戳标签
+function jumpToSegmentByOrd(timeLabel, segOrd) {
+  let t = null;
+  if (Number.isInteger(segOrd)) t = $(`.seg-time[data-seg-ord="${segOrd}"]`);
+  if (!t && timeLabel) {
+    t = [...$$('.seg-time')].find((n) => n.dataset.timeLabel === timeLabel);
+    if (!t) {
+      const m = String(timeLabel).match(/^片段\s*(\d+)$/);
+      if (m) t = $(`.seg-time[data-seg-ord="${parseInt(m[1], 10) - 1}"]`);
+    }
   }
   if (t) flashElement(t.closest('.seg'));
-  else toast('原文中未找到该时间戳（可能原文已更新）', 'warn');
+  else toast('原文中未找到该定位（可能原文已更新）', 'warn');
 }
 
 /* ================= 矛盾提示 ================= */
@@ -408,6 +469,142 @@ function renderConflicts() {
     ]);
     list.appendChild(item);
   });
+}
+
+/* ================= 原文修订：待确认证据队列 ================= */
+const PENDING_REASON_LABELS = {
+  missing: '新原文中未找到对应片段',
+  ambiguous: '新原文中存在多个可能片段'
+};
+
+function pendingEvidences() {
+  const out = [];
+  for (const c of state.current.claims) {
+    for (const e of c.evidence) {
+      if (e.match_status === 'pending') out.push({ claim: c, ev: e });
+    }
+  }
+  return out;
+}
+
+function evidenceCiteLabel(ev) {
+  if (ev.time_label) return ev.time_label;
+  if (Number.isInteger(ev.seg_ord)) return `片段 ${ev.seg_ord + 1}`;
+  return '无时间戳';
+}
+
+function segmentOptionLabel(seg) {
+  const label = seg.time_label || `片段 ${seg.ord + 1}`;
+  const t = seg.text.replace(/\s+/g, ' ').trim();
+  const previewText = t.length > 36 ? t.slice(0, 36) + '…' : t;
+  return `[${label}]${seg.speaker ? ' ' + seg.speaker + '：' : ''}${previewText}`;
+}
+
+// 构造「重绑到新片段」操作区：候选片段下拉 + 重绑 / 保留快照按钮
+function buildResolveControls(ev) {
+  const select = el('select', { 'aria-label': '选择新片段' });
+  select.appendChild(el('option', { value: '', text: '选择修订后的片段…' }));
+
+  const candOrds = new Set((ev.match_candidates || []).map((c) => c.seg_ord));
+  const candidates = (ev.match_candidates || []);
+  candidates.forEach((c) => {
+    const label = c.time_label || (Number.isInteger(c.seg_ord) ? `片段 ${c.seg_ord + 1}` : `片段 ?`);
+    const prev = c.text_preview || '';
+    select.appendChild(el('option', {
+      value: c.seg_ord,
+      text: `可能：[${label}]${c.speaker ? ' ' + c.speaker + '：' : ''}${prev}`
+    }));
+  });
+  if (candidates.length) {
+    select.appendChild(el('option', { value: '__other__', text: '── 其它片段 ──', disabled: 'disabled' }));
+  }
+  state.current.segments.forEach((seg) => {
+    if (candOrds.has(seg.ord)) return;
+    select.appendChild(el('option', { value: seg.ord, text: segmentOptionLabel(seg) }));
+  });
+
+  return el('div', { class: 'queue-actions' }, [
+    select,
+    el('button', {
+      class: 'btn small primary',
+      text: '重绑到所选片段',
+      onclick: () => {
+        const val = select.value;
+        if (val === '' || val === '__other__') { toast('请先选择一个片段', 'warn'); return; }
+        resolveEvidence(ev.id, 'rebind', parseInt(val, 10), claim);
+      }
+    }),
+    el('button', {
+      class: 'btn small',
+      text: '保留为历史快照',
+      title: '保留修订前摘录内容，不再指向当前原文',
+      onclick: () => resolveEvidence(ev.id, 'snapshot', null, claim)
+    })
+  ]);
+}
+
+function renderRevisionQueue() {
+  const banner = $('#revisionBanner');
+  const pending = pendingEvidences();
+  banner.hidden = pending.length === 0;
+  if (!pending.length) { $('#chkQueueExpanded').checked = false; $('#revisionQueue').hidden = true; return; }
+
+  const byClaim = new Map();
+  pending.forEach((p) => {
+    if (!byClaim.has(p.claim.id)) byClaim.set(p.claim.id, []);
+    byClaim.get(p.claim.id).push(p);
+  });
+
+  $('#revisionSummary').innerHTML = '';
+  $('#revisionSummary').appendChild(document.createTextNode(
+    `保存修订后，${pending.length} 条证据无法唯一定位（${byClaim.size} 张主张卡片受影响）。唯一定位的证据已自动更新，无匹配或多匹配的证据不会丢失或错误迁移。`
+  ));
+  $('#revisionSummary').appendChild(el('button', {
+    class: 'link-btn',
+    text: $('#chkQueueExpanded').checked ? '收起队列' : '展开队列',
+    onclick: () => {
+      $('#chkQueueExpanded').checked = !$('#chkQueueExpanded').checked;
+      renderRevisionQueue();
+    }
+  }));
+
+  const queue = $('#revisionQueue');
+  queue.hidden = !$('#chkQueueExpanded').checked;
+  queue.innerHTML = '';
+  pending.forEach(({ claim, ev }) => {
+    const reason = PENDING_REASON_LABELS[ev.pending_reason] || '定位待确认';
+    const item = el('div', { class: 'queue-item' }, [
+      el('div', { class: 'queue-claim', text: `主张 #${claim.id}：${claim.normalized_text.slice(0, 50)}`,
+        onclick: () => {
+          if ($('#statusFilter').value !== 'all') $('#statusFilter').value = 'all';
+          renderClaims();
+          const node = $('#claim-' + claim.id);
+          if (node) flashElement(node);
+        }
+      }),
+      el('div', { class: 'queue-excerpt' }, [
+        el('span', { class: 'ev-flag pending', text: '待确认' }),
+        el('span', { class: 'queue-reason', text: reason }),
+        document.createTextNode(`  ${ev.excerpt}`)
+      ]),
+      el('div', { class: 'queue-old', text: `修订前定位：[${evidenceCiteLabel(ev)}]${ev.speaker ? ' ' + ev.speaker + '：' : ''}` }),
+      buildResolveControls(ev)
+    ]);
+    queue.appendChild(item);
+  });
+}
+
+$('#chkQueueExpanded').addEventListener('change', renderRevisionQueue);
+
+async function resolveEvidence(evidenceId, action, segOrd, claim) {
+  try {
+    const result = await api('PUT', `/api/evidence/${evidenceId}/resolve`, { action, seg_ord: segOrd });
+    state.current = result.interview;
+    renderAll();
+    loadList();
+    if (action === 'snapshot') toast('已保留为历史快照');
+    else toast(`证据已重新绑定到${claim ? ' 主张 #' + claim.id : ''}的新片段`);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 function miniClaim(id) {
@@ -477,7 +674,8 @@ $('#btnSaveClaim').addEventListener('click', async () => {
   const evidence = sel ? [{
     excerpt: sel.text,
     time_label: sel.timeLabel,
-    speaker: sel.speaker
+    speaker: sel.speaker,
+    seg_ord: sel.segOrd
   }] : [];
   try {
     const result = await api('POST', `/api/interviews/${state.current.id}/claims`, {
@@ -507,7 +705,8 @@ $('#btnLinkEvidence').addEventListener('click', async () => {
     state.current = await api('POST', `/api/claims/${claimId}/evidence`, {
       excerpt: info.text,
       time_label: info.timeLabel,
-      speaker: info.speaker
+      speaker: info.speaker,
+      seg_ord: info.segOrd
     });
     $('#evidenceModal').hidden = true;
     state.selection = null;
@@ -578,15 +777,25 @@ $('#btnEditTranscript').addEventListener('click', () => {
 $('#btnSaveTranscript').addEventListener('click', async () => {
   const title = $('#editTitle').value.trim() || '未命名采访';
   try {
-    state.current = await api('PUT', `/api/interviews/${state.current.id}`, {
+    const iv = await api('PUT', `/api/interviews/${state.current.id}`, {
       title,
       source: $('#editSource').value.trim(),
       transcript: $('#editTranscript').value
     });
+    state.current = iv;
     $('#transcriptModal').hidden = true;
     renderAll();
     loadList();
-    toast('已保存并重新分段、重算矛盾');
+    const s = iv.rematch_summary || { total: 0, updated: 0, pending: 0 };
+    if (s.total === 0) {
+      toast('已保存并重新分段、重算矛盾');
+    } else if (s.pending > 0) {
+      toast(`原文已修订：${s.updated} 条证据已重新定位，${s.pending} 条待确认`, 'warn');
+      $('#chkQueueExpanded').checked = true;
+      renderRevisionQueue();
+    } else {
+      toast(`原文已修订：${s.updated} 条证据均已自动重新定位`);
+    }
   } catch (e) { toast(e.message, 'error'); }
 });
 

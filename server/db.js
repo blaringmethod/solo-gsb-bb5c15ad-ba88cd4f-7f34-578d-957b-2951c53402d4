@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS evidence (
   excerpt    TEXT NOT NULL,
   time_label TEXT DEFAULT '',
   speaker    TEXT DEFAULT '',
+  seg_ord    INTEGER,
+  match_status   TEXT NOT NULL DEFAULT 'matched',
+  pending_reason TEXT NOT NULL DEFAULT '',
+  match_candidates TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
@@ -69,5 +73,15 @@ CREATE TABLE IF NOT EXISTS contradictions (
 );
 CREATE INDEX IF NOT EXISTS idx_contra_interview ON contradictions(interview_id);
 `);
+
+// 轻量迁移：为旧版本数据库补齐“原文修订影响追踪”相关列
+{
+  const cols = new Set(db.prepare('PRAGMA table_info(evidence)').all().map((c) => c.name));
+  const addCol = (name, ddl) => { if (!cols.has(name)) db.exec(`ALTER TABLE evidence ADD COLUMN ${ddl}`); };
+  addCol('seg_ord', 'seg_ord INTEGER');
+  addCol('match_status', "match_status TEXT NOT NULL DEFAULT 'matched'");
+  addCol('pending_reason', "pending_reason TEXT NOT NULL DEFAULT ''");
+  addCol('match_candidates', "match_candidates TEXT NOT NULL DEFAULT '[]'");
+}
 
 module.exports = db;

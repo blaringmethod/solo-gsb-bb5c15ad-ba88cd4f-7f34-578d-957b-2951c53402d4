@@ -10,6 +10,23 @@ const STATUS_LABELS = {
 
 const TYPE_LABELS = { numeric: '数值冲突', negation: '肯定/否定冲突' };
 
+const PENDING_REASON_LABELS = {
+  missing: '原文修订后未找到对应片段',
+  ambiguous: '原文修订后存在多个可能片段'
+};
+
+function evidenceStatusOf(ev) {
+  return ev.match_status === 'snapshot' ? 'snapshot'
+    : ev.match_status === 'pending' ? 'pending' : 'current';
+}
+
+// 引用标签：优先真实时间戳；无时间戳时按 seg_ord 显示「片段 N」（待确认/快照仅作历史说明）
+function citeLabel(ev) {
+  if (ev.time_label) return ev.time_label;
+  if (Number.isInteger(ev.seg_ord)) return `片段 ${ev.seg_ord + 1}`;
+  return '无时间戳';
+}
+
 function mdEscape(s) {
   return String(s == null ? '' : s).replace(/\r\n?/g, '\n').trim();
 }
@@ -40,6 +57,16 @@ function buildReport(iv) {
   lines.push(`- 事实主张数：${iv.claims.length}`);
   const activeContra = iv.contradictions.filter((c) => !c.ignored);
   lines.push(`- 未解决的矛盾提示：${activeContra.length}`);
+  const pendingTotal = iv.claims.reduce((n, c) =>
+    n + c.evidence.filter((e) => e.match_status === 'pending').length, 0);
+  const snapshotTotal = iv.claims.reduce((n, c) =>
+    n + c.evidence.filter((e) => e.match_status === 'snapshot').length, 0);
+  if (pendingTotal) {
+    lines.push(`- ⚠️ 待确认的证据定位：${pendingTotal} 条（原文修订后未能唯一定位，尚未完成人工处理）`);
+  }
+  if (snapshotTotal) {
+    lines.push(`- 历史快照证据：${snapshotTotal} 条（保留修订前内容，不指向当前原文）`);
+  }
   lines.push('');
 
   /* ---------- 一、矛盾清单 ---------- */
@@ -79,12 +106,33 @@ function buildReport(iv) {
       lines.push('');
     }
     if (c.evidence.length) {
-      lines.push('**证据链：**');
-      lines.push('');
-      c.evidence.forEach((ev, i) => {
-        const cite = ev.time_label ? `[${ev.time_label}]` : '[无时间戳]';
+      const current = c.evidence.filter((e) => evidenceStatusOf(e) === 'current');
+      const pending = c.evidence.filter((e) => evidenceStatusOf(e) === 'pending');
+      const snapshots = c.evidence.filter((e) => evidenceStatusOf(e) === 'snapshot');
+
+      const renderEv = (ev, i) => {
         const speaker = ev.speaker ? ` **${mdEscape(ev.speaker)}：**` : '';
-        lines.push(`${i + 1}. ${cite}${speaker} ${mdEscape(ev.excerpt)}`);
+        return `${i + 1}. [${citeLabel(ev)}]${speaker} ${mdEscape(ev.excerpt)}`;
+      };
+
+      lines.push(`**证据链（当前定位 ${current.length} 条${pending.length ? `，待确认 ${pending.length} 条` : ''}${snapshots.length ? `，历史快照 ${snapshots.length} 条` : ''}）：**`);
+      lines.push('');
+
+      if (current.length) {
+        current.forEach((ev, i) => lines.push(renderEv(ev, i)));
+      } else if (!pending.length && !snapshots.length) {
+        lines.push('（暂无关联证据）');
+      }
+
+      pending.forEach((ev) => {
+        const reason = PENDING_REASON_LABELS[ev.pending_reason] || '原文修订后定位待确认';
+        const speaker = ev.speaker ? ` **${mdEscape(ev.speaker)}：**` : '';
+        lines.push(`- ⚠️ **待确认**（${reason}；原定位 [${citeLabel(ev)}]）${speaker} ${mdEscape(ev.excerpt)}`);
+      });
+
+      snapshots.forEach((ev) => {
+        const speaker = ev.speaker ? ` **${mdEscape(ev.speaker)}：**` : '';
+        lines.push(`- 🗄️ **历史快照**（修订前定位 [${citeLabel(ev)}]，不指向当前原文）${speaker} ${mdEscape(ev.excerpt)}`);
       });
     } else {
       lines.push('**证据链：** （暂无关联证据）');

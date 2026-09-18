@@ -6,6 +6,7 @@ const db = require('./db');
 const { parseTranscript } = require('./parser');
 const { normalizeClaim, detectRelations } = require('./normalizer');
 const { buildReport } = require('./report');
+const { rematchInterview, resolveEvidence, locateNewEvidence, pendingCount } = require('./rematch');
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -17,6 +18,10 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function rowToClaim(r) {
   return { ...r, keywords: JSON.parse(r.keywords || '[]'), facts: JSON.parse(r.facts || '[]') };
+}
+
+function rowToEvidence(r) {
+  return { ...r, match_candidates: JSON.parse(r.match_candidates || '[]') };
 }
 
 function getInterviewOrThrow(id) {
@@ -34,8 +39,10 @@ function loadInterview(id) {
   iv.segments = db.prepare('SELECT * FROM segments WHERE interview_id = ? ORDER BY ord').all(id);
   iv.claims = db.prepare('SELECT * FROM claims WHERE interview_id = ? ORDER BY id').all(id).map(rowToClaim);
   for (const c of iv.claims) {
-    c.evidence = db.prepare('SELECT * FROM evidence WHERE claim_id = ? ORDER BY id').all(c.id);
+    c.evidence = db.prepare('SELECT * FROM evidence WHERE claim_id = ? ORDER BY id').all(c.id).map(rowToEvidence);
+    c.pending_evidence_count = c.evidence.filter((e) => e.match_status === 'pending').length;
   }
+  iv.pending_evidence_count = pendingCount(id);
   const contra = db.prepare('SELECT * FROM contradictions WHERE interview_id = ? ORDER BY id').all(id);
   const claimById = new Map(iv.claims.map((c) => [c.id, c]));
   iv.contradictions = contra.map((r) => ({
@@ -59,10 +66,12 @@ function replaceSegments(interviewId, segments) {
   tx(segments);
 }
 
-// 重新解析全文并重算矛盾；evidence 通过 (time_label, 原文片段) 尝试保留快照信息
+// 重新解析全文（删除旧分段、写入新分段），并将已有证据摘录与新分段重新匹配。
+// 历史快照证据（match_status='snapshot'）不参与重匹配，保证不静默丢失或错误迁移。
 function reparse(interviewId, transcript) {
   const segments = parseTranscript(transcript);
   replaceSegments(interviewId, segments);
+  return rematchInterview(interviewId);
 }
 
 function recomputeContradictions(interviewId) {
@@ -96,7 +105,9 @@ app.get('/api/interviews', (req, res) => {
   const rows = db.prepare(`
     SELECT i.*,
       (SELECT COUNT(*) FROM claims c WHERE c.interview_id = i.id) AS claim_count,
-      (SELECT COUNT(*) FROM contradictions x WHERE x.interview_id = i.id AND x.ignored = 0) AS contradiction_count
+      (SELECT COUNT(*) FROM contradictions x WHERE x.interview_id = i.id AND x.ignored = 0) AS contradiction_count,
+      (SELECT COUNT(*) FROM evidence e JOIN claims c ON c.id = e.claim_id
+        WHERE c.interview_id = i.id AND e.match_status = 'pending') AS pending_evidence_count
     FROM interviews i ORDER BY i.updated_at DESC, i.id DESC
   `).all();
   res.json(rows);
@@ -124,13 +135,16 @@ app.put('/api/interviews/:id', (req, res) => {
   const title = (req.body.title || '未命名采访').toString().slice(0, 200);
   const source = (req.body.source || '').toString().slice(0, 500);
   const transcript = (req.body.transcript || '').toString();
-  db.transaction(() => {
+  const rematch = db.transaction(() => {
     db.prepare("UPDATE interviews SET title = ?, source = ?, transcript = ?, updated_at = datetime('now') WHERE id = ?")
       .run(title, source, transcript, id);
-    reparse(id, transcript);
+    const summary = reparse(id, transcript);
     recomputeContradictions(id);
+    return summary;
   })();
-  res.json(loadInterview(id));
+  const interview = loadInterview(id);
+  interview.rematch_summary = rematch;
+  res.json(interview);
 });
 
 app.delete('/api/interviews/:id', (req, res) => {
@@ -166,11 +180,23 @@ app.post('/api/interviews/:id/claims', (req, res) => {
 
   // 创建主张时附带的证据摘录
   const evs = Array.isArray(req.body.evidence) ? req.body.evidence : [];
-  const insEv = db.prepare('INSERT INTO evidence (claim_id, excerpt, time_label, speaker) VALUES (?, ?, ?, ?)');
+  const newSegments = db.prepare('SELECT * FROM segments WHERE interview_id = ? ORDER BY ord').all(interviewId);
+  const insEv = db.prepare(`
+    INSERT INTO evidence (claim_id, excerpt, time_label, speaker, seg_ord, match_status)
+    VALUES (?, ?, ?, ?, ?, 'matched')
+  `);
   evs.forEach((e) => {
     const excerpt = String(e.excerpt || '').trim();
     if (!excerpt) return;
-    insEv.run(claimId, excerpt.slice(0, 2000), String(e.time_label || '').slice(0, 20), String(e.speaker || '').slice(0, 80));
+    const raw = {
+      excerpt: excerpt.slice(0, 2000),
+      time_label: String(e.time_label || '').slice(0, 20),
+      speaker: String(e.speaker || '').slice(0, 80)
+    };
+    const parsedOrd = parseInt(e.seg_ord, 10);
+    const segOrd = Number.isInteger(parsedOrd) ? parsedOrd : null;
+    const loc = locateNewEvidence(raw, newSegments, segOrd);
+    insEv.run(claimId, raw.excerpt, loc.time_label.slice(0, 20), loc.speaker.slice(0, 80), loc.seg_ord);
   });
 
   const duplicates = recomputeContradictions(interviewId);
@@ -226,8 +252,19 @@ app.post('/api/claims/:id/evidence', (req, res) => {
   if (!claim) return res.status(404).json({ error: '主张不存在' });
   const excerpt = String(req.body.excerpt || '').trim();
   if (!excerpt) return res.status(400).json({ error: '证据摘录不能为空' });
-  db.prepare('INSERT INTO evidence (claim_id, excerpt, time_label, speaker) VALUES (?, ?, ?, ?)')
-    .run(id, excerpt.slice(0, 2000), String(req.body.time_label || '').slice(0, 20), String(req.body.speaker || '').slice(0, 80));
+  const raw = {
+    excerpt: excerpt.slice(0, 2000),
+    time_label: String(req.body.time_label || '').slice(0, 20),
+    speaker: String(req.body.speaker || '').slice(0, 80)
+  };
+  const parsedOrd = parseInt(req.body.seg_ord, 10);
+  const segOrd = Number.isInteger(parsedOrd) ? parsedOrd : null;
+  const segments = db.prepare('SELECT * FROM segments WHERE interview_id = ? ORDER BY ord').all(claim.interview_id);
+  const loc = locateNewEvidence(raw, segments, segOrd);
+  db.prepare(`
+    INSERT INTO evidence (claim_id, excerpt, time_label, speaker, seg_ord, match_status)
+    VALUES (?, ?, ?, ?, ?, 'matched')
+  `).run(id, raw.excerpt, loc.time_label.slice(0, 20), loc.speaker.slice(0, 80), loc.seg_ord);
   res.json(loadInterview(claim.interview_id));
 });
 
@@ -238,6 +275,14 @@ app.delete('/api/evidence/:id', (req, res) => {
   const claim = db.prepare('SELECT interview_id FROM claims WHERE id = ?').get(ev.claim_id);
   db.prepare('DELETE FROM evidence WHERE id = ?').run(id);
   res.json(loadInterview(claim.interview_id));
+});
+
+// 原文修订后的待确认证据：重新绑定到某个新片段（rebind）或保留为历史快照（snapshot）
+app.put('/api/evidence/:id/resolve', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const action = String(req.body.action || '');
+  const result = resolveEvidence(id, action, req.body.seg_ord);
+  res.json({ interview: loadInterview(result.interviewId), action: result.action });
 });
 
 /* ---------------- contradiction routes ---------------- */
