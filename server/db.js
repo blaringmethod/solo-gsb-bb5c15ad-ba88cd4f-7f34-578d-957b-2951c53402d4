@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS interviews (
   title       TEXT NOT NULL,
   source      TEXT DEFAULT '',
   transcript  TEXT NOT NULL DEFAULT '',
+  revision    INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -53,6 +54,8 @@ CREATE TABLE IF NOT EXISTS evidence (
   excerpt    TEXT NOT NULL,
   time_label TEXT DEFAULT '',
   speaker    TEXT DEFAULT '',
+  match_state TEXT NOT NULL DEFAULT 'located',
+  match_info  TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
@@ -69,5 +72,15 @@ CREATE TABLE IF NOT EXISTS contradictions (
 );
 CREATE INDEX IF NOT EXISTS idx_contra_interview ON contradictions(interview_id);
 `);
+
+// 轻量迁移：为已存在的数据库补充「原文修订影响追踪」所需列
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+ensureColumn('interviews', 'revision', "revision INTEGER NOT NULL DEFAULT 0");
+ensureColumn('evidence', 'match_state', "match_state TEXT NOT NULL DEFAULT 'located'");
+ensureColumn('evidence', 'match_info', "match_info TEXT NOT NULL DEFAULT ''");
+db.exec('CREATE INDEX IF NOT EXISTS idx_evidence_state ON evidence(match_state);');
 
 module.exports = db;

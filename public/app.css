@@ -73,7 +73,14 @@ html, body {
 .iv-item.active { background: var(--primary-dim); border-left-color: var(--primary); }
 .iv-item .t { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
 .iv-item .m { color: var(--muted); font-size: 12px; display: flex; gap: 10px; }
-.badge-conflict { color: var(--danger); font-weight: 600; }
+..badge-conflict { color: var(--danger); font-weight: 600; }
+.badge-pending {
+  color: var(--warn);
+  font-weight: 600;
+  background: var(--warn-dim);
+  border-radius: 9px;
+  padding: 0 7px;
+}
 
 /* ---------- main ---------- */
 .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
@@ -144,6 +151,44 @@ html, body {
 .seg-text::selection,
 .seg-text *::selection { background: #c6d2f7; }
 
+/* ---------- pending (revision impact) banner ---------- */
+.pending-banner {
+  margin: 12px 14px 0;
+  border: 1px solid #ecd2a8;
+  background: var(--warn-dim);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.pending-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.pending-total {
+  background: var(--warn);
+  color: #fff;
+  font-size: 11px;
+  border-radius: 9px;
+  padding: 1px 8px;
+}
+.pending-desc { margin: 6px 0 8px; font-size: 12px; color: #7a5a28; line-height: 1.6; }
+.pending-item {
+  background: #fff;
+  border: 1px solid #f0dfc2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.pending-reason { font-size: 11px; color: var(--warn); margin: 2px 0 6px; }
+.pending-quote {
+  background: var(--warn-dim);
+  border-radius: 6px;
+  padding: 5px 8px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--warn);
+}
+.pending-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pending-row select { flex: 1; min-width: 200px; font-size: 12px; padding: 5px 7px; }
+.pending-row .btn { padding: 4px 9px; font-size: 12px; }
+
 /* ---------- conflict banner ---------- */
 .conflict-banner {
   margin: 12px 14px 0;
@@ -201,6 +246,16 @@ html, body {
   background: #fff;
 }
 .claim-card.has-conflict { border-color: #ecb8b8; box-shadow: 0 0 0 1px #f6dede inset; }
+.claim-card.has-pending { border-color: #ecd2a8; box-shadow: 0 0 0 1px #f7e8cf inset; }
+.claim-pending-badge {
+  font-size: 11px;
+  background: var(--warn-dim);
+  color: var(--warn);
+  border: 1px solid #ecd2a8;
+  border-radius: 9px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
 .claim-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .claim-top select { padding: 2px 4px; font-size: 12px; }
 .claim-id { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
@@ -228,6 +283,25 @@ html, body {
   margin-bottom: 5px;
   line-height: 1.65;
 }
+.ev-item.is-pending {
+  background: var(--warn-dim);
+  border-left-color: var(--warn);
+}
+.ev-item.is-snapshot {
+  background: var(--neutral-dim);
+  border-left-color: var(--neutral);
+  color: var(--muted);
+}
+.ev-state-tag {
+  font-size: 10px;
+  border-radius: 8px;
+  padding: 0 6px;
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+.ev-state-tag.pending { background: var(--warn); color: #fff; }
+.ev-state-tag.snapshot { background: var(--neutral); color: #fff; }
+.ev-item.is-snapshot .ev-cite { color: var(--muted); cursor: default; }
 .ev-cite {
   font-family: ui-monospace, monospace;
   font-size: 11px;

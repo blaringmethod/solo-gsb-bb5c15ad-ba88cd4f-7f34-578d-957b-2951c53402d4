@@ -86,6 +86,9 @@ async function loadList(selectId) {
   for (const iv of state.interviews) {
     const meta = el('div', { class: 'm' }, [
       el('span', { text: `主张 ${iv.claim_count}` }),
+      iv.pending_count > 0
+        ? el('span', { class: 'badge-pending', text: `🔧 ${iv.pending_count} 待确认` })
+        : null,
       iv.contradiction_count > 0
         ? el('span', { class: 'badge-conflict', text: `⚠ ${iv.contradiction_count}` })
         : null
@@ -113,6 +116,7 @@ function renderAll() {
   $('#ivSource').textContent = iv.source ? `来源/被访人：${iv.source}` : '';
   renderSegments();
   renderConflicts();
+  renderPendingQueue();
   renderClaims();
 }
 
@@ -297,10 +301,15 @@ function renderClaims() {
   }
 
   const badIds = conflictClaimIds();
+  const pendingByClaim = new Map();
+  (state.current.claims || []).forEach((c) => {
+    pendingByClaim.set(c.id, c.evidence.filter((e) => e.match_state === 'pending'));
+  });
 
   claims.forEach((c) => {
+    const pendingEvs = pendingByClaim.get(c.id) || [];
     const card = el('div', {
-      class: 'claim-card' + (badIds.has(c.id) ? ' has-conflict' : ''),
+      class: 'claim-card' + (badIds.has(c.id) ? ' has-conflict' : '') + (pendingEvs.length ? ' has-pending' : ''),
       id: 'claim-' + c.id
     });
 
@@ -313,6 +322,14 @@ function renderClaims() {
     ));
     const top = el('div', { class: 'claim-top' }, [
       el('span', { class: 'claim-id', text: `主张 #${c.id}` }),
+      pendingEvs.length
+        ? el('span', {
+            class: 'claim-pending-badge',
+            text: `🔧 ${pendingEvs.length} 条证据待确认`,
+            title: '跳转到待确认队列',
+            onclick: () => $('#pendingBanner').scrollIntoView({ behavior: 'smooth', block: 'center' })
+          })
+        : null,
       el('span', { class: `status-pill status-${c.status}`, text: STATUS_LABELS[c.status] || c.status }),
       el('span', { class: 'spacer' }),
       statusSelect
@@ -332,16 +349,40 @@ function renderClaims() {
     // 证据链
     card.appendChild(el('div', { class: 'claim-section-label', text: `证据链（${c.evidence.length}）` }));
     c.evidence.forEach((ev) => {
-      const item = el('div', { class: 'ev-item' }, [
+      const mstate = ev.match_state || 'located';
+      const item = el('div', {
+        class: 'ev-item' + (mstate === 'pending' ? ' is-pending' : mstate === 'snapshot' ? ' is-snapshot' : '')
+      }, [
+        mstate === 'pending'
+          ? el('span', { class: 'ev-state-tag pending', text: '待确认' })
+          : mstate === 'snapshot'
+            ? el('span', { class: 'ev-state-tag snapshot', text: '历史快照' })
+            : null,
         el('span', {
           class: 'ev-cite',
           text: `[${ev.time_label || '—'}]`,
-          title: '跳转到原文位置',
-          onclick: () => jumpToSegment(ev.time_label)
+          title: mstate === 'located' ? '跳转到原文位置' : mstate === 'snapshot' ? '历史快照：不对应新原文' : '定位待确认',
+          onclick: () => {
+            if (mstate === 'located') jumpToSegment(ev.time_label);
+            else if (mstate === 'pending') $('#pendingBanner').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
         }),
         ev.speaker ? el('span', { class: 'ev-speaker', text: ev.speaker + '：' }) : null,
         document.createTextNode(ev.excerpt),
-        el('span', { class: 'ev-del', text: '✕', title: '删除证据', onclick: () => removeEvidence(ev.id) })
+        mstate === 'pending'
+          ? el('span', { style: 'float:right;display:inline-flex;gap:10px;align-items:center;' }, [
+              el('span', {
+                class: 'link-btn',
+                text: '去处理',
+                onclick: () => {
+                  const node = document.querySelector(`[data-pending-ev="${ev.id}"]`);
+                  $('#pendingBanner').scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  if (node) flashElement(node);
+                }
+              }),
+              el('span', { class: 'ev-del', text: '✕', title: '删除证据', onclick: () => removeEvidence(ev.id) })
+            ])
+          : el('span', { class: 'ev-del', text: '✕', title: '删除证据', onclick: () => removeEvidence(ev.id) })
       ]);
       card.appendChild(item);
     });
@@ -410,6 +451,98 @@ function renderConflicts() {
   });
 }
 
+/* ================= 修订待确认队列 ================= */
+const PENDING_REASON_LABELS = {
+  no_match: '新原文中未找到对应文字',
+  multi_match: '在多个新分段中命中，无法唯一确定',
+  conflict: '文字命中，但说话人不一致，为避免错误迁移需人工确认'
+};
+
+function allPendingEvidence() {
+  const out = [];
+  state.current.claims.forEach((c) => {
+    c.evidence.forEach((ev) => {
+      if (ev.match_state === 'pending') out.push({ claim: c, ev });
+    });
+  });
+  return out;
+}
+
+function segmentOption(seg) {
+  const label = seg.time_label || `片段 ${seg.ord + 1}`;
+  const head = seg.speaker ? seg.speaker + '：' : '';
+  const t = seg.text.replace(/\n/g, ' ').slice(0, 36);
+  return el('option', { value: seg.ord, text: `[${label}] ${head}${t}${seg.text.length > 36 ? '…' : ''}` });
+}
+
+function renderPendingQueue() {
+  const banner = $('#pendingBanner');
+  const list = $('#pendingList');
+  list.innerHTML = '';
+  const pendings = allPendingEvidence();
+  banner.hidden = pendings.length === 0;
+  $('#pendingTotal').textContent = pendings.length ? `${pendings.length} 条待处理` : '';
+  if (!pendings.length) return;
+
+  pendings.forEach(({ claim, ev }) => {
+    const reason = (ev.match_info && PENDING_REASON_LABELS[ev.match_info.reason]) || '定位待确认';
+    const select = el('select', { 'aria-label': '选择新片段' });
+    state.current.segments.forEach((seg) => select.appendChild(segmentOption(seg)));
+    // 默认选中系统给出的首个候选片段
+    const cand = ev.match_info && ev.match_info.candidates && ev.match_info.candidates[0];
+    if (cand && state.current.segments.some((s) => s.ord === cand.ord)) select.value = String(cand.ord);
+
+    const item = el('div', { class: 'pending-item' }, [
+      el('div', { class: 'pending-reason' }, [
+        document.createTextNode(`主张 #${claim.id} · ${reason}`),
+        el('span', { style: 'margin-left:8px' }, [
+          el('a', {
+            class: 'link-btn',
+            text: '查看主张',
+            onclick: () => {
+              const node = $('#claim-' + claim.id);
+              if (node) {
+                if ($('#statusFilter').value !== 'all') $('#statusFilter').value = 'all';
+                renderClaims();
+                flashElement($('#claim-' + claim.id));
+              }
+            }
+          })
+        ])
+      ]),
+      el('div', { class: 'pending-quote', text: `[${ev.time_label || '无时间戳'}]${ev.speaker ? ' ' + ev.speaker + '：' : ''}${ev.excerpt}` }),
+      el('div', { class: 'pending-row' }, [
+        select,
+        el('button', {
+          class: 'btn small primary',
+          text: '重新绑定',
+          onclick: () => resolveEvidence(ev.id, 'rebind', parseInt(select.value, 10))
+        }),
+        el('button', {
+          class: 'btn small',
+          text: '保留为历史快照',
+          onclick: () => resolveEvidence(ev.id, 'snapshot')
+        })
+      ])
+    ]);
+    item.dataset.pendingEv = ev.id;
+    list.appendChild(item);
+  });
+}
+
+async function resolveEvidence(evId, action, segOrd) {
+  const body = action === 'rebind' ? { action, segment_ord: segOrd } : { action };
+  try {
+    state.current = await api('POST', `/api/evidence/${evId}/resolve`, body);
+    renderPendingQueue();
+    renderClaims();
+    loadList();
+    const remain = (state.current.pending_count || 0);
+    if (remain === 0) toast('全部待确认证据已处理，恢复正常状态');
+    else toast(action === 'rebind' ? '证据已重新绑定到新片段' : '证据已保留为历史快照');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 function miniClaim(id) {
   const c = state.current.claims.find((x) => x.id === id);
   if (!c) return el('span', { class: 'mini-claim', text: `#${id}（已删除）` });
@@ -443,6 +576,7 @@ async function removeClaim(id) {
   try {
     state.current = await api('DELETE', `/api/claims/${id}`);
     renderConflicts();
+    renderPendingQueue();
     renderClaims();
     loadList();
     toast('主张已删除');
@@ -452,7 +586,9 @@ async function removeClaim(id) {
 async function removeEvidence(id) {
   try {
     state.current = await api('DELETE', `/api/evidence/${id}`);
+    renderPendingQueue();
     renderClaims();
+    loadList();
     toast('证据已删除');
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -578,15 +714,21 @@ $('#btnEditTranscript').addEventListener('click', () => {
 $('#btnSaveTranscript').addEventListener('click', async () => {
   const title = $('#editTitle').value.trim() || '未命名采访';
   try {
-    state.current = await api('PUT', `/api/interviews/${state.current.id}`, {
+    const fresh = await api('PUT', `/api/interviews/${state.current.id}`, {
       title,
       source: $('#editSource').value.trim(),
       transcript: $('#editTranscript').value
     });
+    state.current = fresh;
     $('#transcriptModal').hidden = true;
     renderAll();
     loadList();
-    toast('已保存并重新分段、重算矛盾');
+    if (fresh.pending_delta > 0) {
+      toast(`已重新分段：${fresh.pending_delta} 条证据无法自动定位，请在待确认队列中处理`, 'warn');
+      setTimeout(() => $('#pendingBanner').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+    } else {
+      toast('已保存并重新分段、重算矛盾；证据定位已自动更新');
+    }
   } catch (e) { toast(e.message, 'error'); }
 });
 

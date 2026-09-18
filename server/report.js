@@ -10,6 +10,12 @@ const STATUS_LABELS = {
 
 const TYPE_LABELS = { numeric: '数值冲突', negation: '肯定/否定冲突' };
 
+const PENDING_REASON_LABELS = {
+  no_match: '新原文中未找到对应文字',
+  multi_match: '在多个新分段中命中，无法唯一确定',
+  conflict: '文字命中但说话人不一致，为避免错误迁移需人工确认'
+};
+
 function mdEscape(s) {
   return String(s == null ? '' : s).replace(/\r\n?/g, '\n').trim();
 }
@@ -40,6 +46,15 @@ function buildReport(iv) {
   lines.push(`- 事实主张数：${iv.claims.length}`);
   const activeContra = iv.contradictions.filter((c) => !c.ignored);
   lines.push(`- 未解决的矛盾提示：${activeContra.length}`);
+  const pendingTotal = iv.claims.reduce(
+    (n, c) => n + c.evidence.filter((e) => (e.match_state || 'located') === 'pending').length, 0
+  );
+  const snapshotTotal = iv.claims.reduce(
+    (n, c) => n + c.evidence.filter((e) => e.match_state === 'snapshot').length, 0
+  );
+  lines.push(`- 原文修订版本：第 ${iv.revision || 0} 次修订`);
+  if (pendingTotal) lines.push(`- ⚠️ 待确认定位的证据：${pendingTotal} 条（见各主张明细，导出前请在工作台处理）`);
+  if (snapshotTotal) lines.push(`- 历史快照证据：${snapshotTotal} 条（修订前原文记录，不再对应当前原文）`);
   lines.push('');
 
   /* ---------- 一、矛盾清单 ---------- */
@@ -78,16 +93,44 @@ function buildReport(iv) {
       lines.push(`**审核备注：** ${mdEscape(c.note)}`);
       lines.push('');
     }
-    if (c.evidence.length) {
-      lines.push('**证据链：**');
-      lines.push('');
-      c.evidence.forEach((ev, i) => {
-        const cite = ev.time_label ? `[${ev.time_label}]` : '[无时间戳]';
-        const speaker = ev.speaker ? ` **${mdEscape(ev.speaker)}：**` : '';
-        lines.push(`${i + 1}. ${cite}${speaker} ${mdEscape(ev.excerpt)}`);
-      });
-    } else {
+    const formatEv = (ev) => {
+      const cite = ev.time_label ? `[${ev.time_label}]` : '[无时间戳]';
+      const speaker = ev.speaker ? ` **${mdEscape(ev.speaker)}：**` : '';
+      return `${cite}${speaker} ${mdEscape(ev.excerpt)}`;
+    };
+    const located = c.evidence.filter((e) => (e.match_state || 'located') === 'located');
+    const pending = c.evidence.filter((e) => e.match_state === 'pending');
+    const snapshots = c.evidence.filter((e) => e.match_state === 'snapshot');
+
+    if (!c.evidence.length) {
       lines.push('**证据链：** （暂无关联证据）');
+    } else {
+      lines.push('**当前定位证据：**');
+      lines.push('');
+      if (located.length) {
+        located.forEach((ev, i) => lines.push(`${i + 1}. ${formatEv(ev)}`));
+      } else {
+        lines.push('（暂无；原有证据待确认或已归入历史快照）');
+      }
+      lines.push('');
+
+      if (pending.length) {
+        lines.push('**⚠️ 待确认定位（修订原文后无法自动匹配，需人工处理）：**');
+        lines.push('');
+        pending.forEach((ev, i) => {
+          const reason = ev.match_info && PENDING_REASON_LABELS[ev.match_info.reason]
+            ? PENDING_REASON_LABELS[ev.match_info.reason] : '定位待确认';
+          lines.push(`${i + 1}. ${formatEv(ev)} — *${reason}*`);
+        });
+        lines.push('');
+      }
+
+      if (snapshots.length) {
+        lines.push('**历史快照（修订前原文中的证据，不再对应当前原文）：**');
+        lines.push('');
+        snapshots.forEach((ev, i) => lines.push(`${i + 1}. ${formatEv(ev)}`));
+        lines.push('');
+      }
     }
     lines.push('');
   });
