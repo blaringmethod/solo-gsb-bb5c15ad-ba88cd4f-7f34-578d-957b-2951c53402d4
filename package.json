@@ -1,0 +1,16 @@
+{
+  "name": "interview-factcheck-workbench",
+  "version": "1.0.0",
+  "description": "采访事实核查工作台：时间轴文字 -> 事实主张 -> 证据链 -> 矛盾检测 -> 核查报告",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2"
+  }
+}

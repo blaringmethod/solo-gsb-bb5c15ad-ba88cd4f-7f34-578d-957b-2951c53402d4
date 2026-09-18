@@ -1,0 +1,18 @@
+services:
+  factcheck:
+    build: .
+    image: interview-factcheck-workbench:latest
+    container_name: factcheck-workbench
+    ports:
+      - "3000:3000"
+    environment:
+      # 服务监听端口（容器内）；如需改宿主端口，修改上方左侧端口映射
+      PORT: 3000
+      # SQLite 数据库文件路径（已挂载到宿主机，容器重建数据不丢失）
+      DB_PATH: /app/data/factcheck.db
+    volumes:
+      - factcheck-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  factcheck-data:

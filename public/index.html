@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>采访事实核查工作台</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🔎</span>
+      <span>采访事实核查工作台</span>
+    </div>
+    <div class="top-actions" id="topActions" hidden>
+      <button class="btn" id="btnEditTranscript">✏️ 编辑原文</button>
+      <button class="btn primary" id="btnReport">📄 导出核查报告</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 侧栏：采访列表 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <button class="btn primary block" id="btnNew">＋ 新建采访</button>
+        <button class="btn block" id="btnSample">载入示例文稿</button>
+      </div>
+      <div class="interview-list" id="interviewList"></div>
+    </aside>
+
+    <!-- 主区域 -->
+    <main class="main">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon">🎙️</div>
+        <h2>从一份带时间戳的采访文字开始</h2>
+        <p>新建采访并粘贴文稿，选取文字建立事实主张、关联证据摘录，系统将自动规范化并检测互相矛盾的说法。</p>
+        <p>
+          <button class="btn primary" id="btnEmptyNew">＋ 新建采访</button>
+          <button class="btn" id="btnEmptySample">载入示例文稿体验</button>
+        </p>
+      </div>
+
+      <div id="workspace" class="workspace" hidden>
+        <div class="iv-meta">
+          <h2 id="ivTitle"></h2>
+          <div class="iv-source" id="ivSource"></div>
+        </div>
+
+        <div class="panes">
+          <!-- 左：时间轴原文 -->
+          <section class="pane transcript-pane">
+            <div class="pane-head">
+              <h3>采访原文 <small>（在文字上划选，可建立主张或追加证据）</small></h3>
+            </div>
+            <div class="segments" id="segments"></div>
+          </section>
+
+          <!-- 右：矛盾提示 + 主张 -->
+          <section class="pane claims-pane">
+            <div class="conflict-banner" id="conflictBanner" hidden>
+              <div class="conflict-head">
+                <strong>⚠️ 检测到矛盾说法</strong>
+                <label class="show-ignored">
+                  <input type="checkbox" id="chkIgnored"> 显示已忽略
+                </label>
+              </div>
+              <div id="conflictList"></div>
+            </div>
+            <div class="pane-head claims-head">
+              <h3>事实主张 <span class="count" id="claimCount">0</span></h3>
+              <select id="statusFilter">
+                <option value="all">全部状态</option>
+                <option value="unverified">待核实</option>
+                <option value="verified">已证实</option>
+                <option value="refuted">已证伪</option>
+                <option value="disputed">有争议</option>
+                <option value="corrected">已更正</option>
+              </select>
+            </div>
+            <div class="claims" id="claims"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 浮动选区工具条 -->
+  <div class="selection-toolbar" id="selToolbar" hidden>
+    <button class="btn small primary" id="selToClaim">＋ 建立事实主张</button>
+    <button class="btn small" id="selToEvidence">🔗 追加为证据</button>
+  </div>
+
+  <!-- 新建主张弹层 -->
+  <div class="modal-mask" id="claimModal" hidden>
+    <div class="modal">
+      <h3>建立事实主张</h3>
+      <label>主张内容（可编辑规范化）</label>
+      <textarea id="claimText" rows="4"></textarea>
+      <label>证据摘录 <span id="claimEvidenceHint"></span></label>
+      <div class="evidence-preview" id="claimEvidencePreview"></div>
+      <div class="modal-actions">
+        <button class="btn" data-close>取消</button>
+        <button class="btn primary" id="btnSaveClaim">保存主张</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 选择目标主张弹层 -->
+  <div class="modal-mask" id="evidenceModal" hidden>
+    <div class="modal">
+      <h3>追加为证据摘录</h3>
+      <p class="modal-quote" id="evidenceQuote"></p>
+      <label>选择要关联的主张</label>
+      <select id="evidenceTarget"></select>
+      <div class="modal-actions">
+        <button class="btn" data-close>取消</button>
+        <button class="btn primary" id="btnLinkEvidence">关联证据</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑原文弹层 -->
+  <div class="modal-mask" id="transcriptModal" hidden>
+    <div class="modal wide">
+      <h3>编辑采访信息与原文</h3>
+      <label>标题</label>
+      <input type="text" id="editTitle">
+      <label>来源 / 被访人（可选）</label>
+      <input type="text" id="editSource">
+      <label>带时间戳的采访原文</label>
+      <textarea id="editTranscript" rows="14" placeholder="例如：&#10;[00:00:12] 记者：请问公司哪一年成立？&#10;[00:00:20] 受访者：我们2018年在杭州成立……"></textarea>
+      <p class="hint">支持时间戳格式：[00:01:23]、(12:34)、01:23：、【2分15秒】；保存后重新分段并重算矛盾。</p>
+      <div class="modal-actions">
+        <button class="btn danger" id="btnDeleteInterview">删除采访</button>
+        <span class="spacer"></span>
+        <button class="btn" data-close>取消</button>
+        <button class="btn primary" id="btnSaveTranscript">保存并重算</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建采访弹层 -->
+  <div class="modal-mask" id="newModal" hidden>
+    <div class="modal wide">
+      <h3>新建采访</h3>
+      <label>标题</label>
+      <input type="text" id="newTitle" placeholder="例如：XX 公司创始人专访">
+      <label>来源 / 被访人（可选）</label>
+      <input type="text" id="newSource">
+      <label>带时间戳的采访原文（可稍后再填）</label>
+      <textarea id="newTranscript" rows="12"></textarea>
+      <div class="modal-actions">
+        <button class="btn" data-close>取消</button>
+        <button class="btn primary" id="btnCreateInterview">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 报告弹层 -->
+  <div class="modal-mask" id="reportModal" hidden>
+    <div class="modal wide">
+      <h3>核查报告（Markdown · 含时间戳引用）</h3>
+      <pre class="report-preview" id="reportPreview"></pre>
+      <div class="modal-actions">
+        <button class="btn" data-close>关闭</button>
+        <button class="btn" id="btnCopyReport">📋 复制</button>
+        <a class="btn primary" id="btnDownloadReport">⬇️ 下载 .md</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toastWrap"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
